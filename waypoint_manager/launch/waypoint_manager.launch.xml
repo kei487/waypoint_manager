@@ -1,11 +1,13 @@
 <launch>
 
-  <arg name ="waypoint_csv"  default="$(find-pkg-share waypoint_manager)/config/waypoint_test.csv"/>
+	<arg name ="waypoint_csv"  default="$(find-pkg-share waypoint_manager)/config/tsudanuma/waypoint3.csv"/>
 
   <node pkg="waypoint_manager" exec="waypoint_manager" >
       <param name="waypoint_csv_path"             value="$(var waypoint_csv)"/>
       <param name="waypoint_radius"               value="0.5"/>
       <param name="goal_resend_interval_sec"      value="3.0"/>
+	  <!-- <remap from="cmd_vel_sub" to="/cmd_vel"/> -->
+	  <!-- <remap from="cmd_vel" to="/sim_cmd_vel"/> -->
     </node>
 
 </launch>

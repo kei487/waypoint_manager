@@ -63,6 +63,8 @@ void WaypointManager::initPublisher()
 {
   goal_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
     "goal_pose", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
+  cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>(
+    "cmd_vel", rclcpp::QoS(10).transient_local().reliable());
 }
 
 
@@ -114,7 +116,7 @@ void WaypointManager::initTimer()
   using namespace std::chrono_literals;
 
   loop_timer_ = this->create_wall_timer(
-    std::chrono::milliseconds{100ms}, std::bind(&WaypointManager::loop, this));
+    std::chrono::milliseconds{500ms}, std::bind(&WaypointManager::loop, this));
 }
 
 void WaypointManager::readWaypointCsv()
@@ -193,7 +195,7 @@ void WaypointManager::readWaypointCsv()
     return;
   }
 
-  waypoints_.header.frame_id = "map";
+  waypoints_.header.frame_id = "map_nav";
   waypoints_.header.stamp = rclcpp::Time();
   waypoints_.waypoints.clear();
 
@@ -344,6 +346,7 @@ void WaypointManager::sendGoal(const geometry_msgs::msg::Pose & goal)
     navigate_to_goal_action_client_->async_send_goal(goal_msg, send_goal_options);
   */
 
+  RCLCPP_INFO(this->get_logger(), "Sending goal %d",waypoint_id_);
   auto goal_stamp = geometry_msgs::msg::PoseStamped();
   goal_stamp.header.frame_id = "map";
   goal_stamp.header.stamp = rclcpp::Time();
