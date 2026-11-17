@@ -44,9 +44,11 @@ void WaypointManager::getParam()
   */
   declare_parameter("waypoint_csv_path", "waypoint.csv");
   declare_parameter("waypoint_radius", 0.5);
+  declare_parameter("goal_resend_interval_sec", 3.0);
 
   waypoint_csv_path_ = get_parameter("waypoint_csv_path").as_string();
   waypoint_radius_ = get_parameter("waypoint_radius").as_double();
+  goal_resend_interval_sec_ = get_parameter("goal_resend_interval_sec").as_double();
 }
 
 void WaypointManager::initTf()
@@ -61,30 +63,19 @@ void WaypointManager::initPublisher()
 {
   goal_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
     "goal_pose", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
-  cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>(
-    "cmd_vel", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
 }
 
 
 void WaypointManager::initSubscription()
 {
-  cmd_vel_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
-    "cmd_vel_sub", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(), 
-    std::bind(&WaypointManager::cmd_vel_callback, this, std::placeholders::_1));
+  vi_state_sub_ = this->create_subscription<std_msgs::msg::String>(
+    "/vi_status", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(),
+    std::bind(&WaypointManager::vi_state_callback, this, std::placeholders::_1));
 }
 
-void WaypointManager::cmd_vel_callback(const geometry_msgs::msg::Twist::SharedPtr msg){
-  geometry_msgs::msg::Twist cmd_vel;
-  if(_is_robot_wait){
-    cmd_vel.linear.x=0;
-    cmd_vel.angular.z=0;
-  }else{
-    cmd_vel.linear.x=msg->linear.x;
-    cmd_vel.angular.z=msg->angular.z;
-  }
-  vel = cmd_vel.linear.x * cmd_vel.linear.x + cmd_vel.angular.z * cmd_vel.angular.z;
-
-  cmd_vel_pub_->publish(cmd_vel);
+void WaypointManager::vi_state_callback(const std_msgs::msg::String::SharedPtr msg)
+{
+  vi_is_idle_ = (msg->data == "idle");
 }
 
 
@@ -100,13 +91,11 @@ void WaypointManager::initServiceServer()
     _is_robot_wait = false;
     goal_reached_ = false;
     waypoint_id_ = 0;
-
-    if (!waypoints_.waypoints.empty()) {
-      sendGoal(waypoints_.waypoints[waypoint_id_].pose);
-    }
+    waiting_for_idle_ = true;
 
     response->success = true;
-    response->message = "Called /restart_waypoint_manager. Restarted from first waypoint.";
+    response->message =
+      "Called /restart_waypoint_manager. Waiting for /vi_state idle before sending first goal.";
   };
   restart_waypoint_manager_service_server_ =
     create_service<std_srvs::srv::Trigger>("restart_waypoint_manager", restart_waypoint_manager);
@@ -323,8 +312,11 @@ void WaypointManager::initsendGoal(){
 
   waypoint_id_ = 0;
   goal_reached_ = false;
-  RCLCPP_INFO(get_logger(), "Send first goal (waypoint id=%u)", waypoints_.waypoints[waypoint_id_].id);
-  sendGoal(waypoints_.waypoints[waypoint_id_].pose);
+  waiting_for_idle_ = true;
+  RCLCPP_INFO(
+    get_logger(),
+    "Waiting for /vi_state idle before sending first goal (waypoint id=%u)",
+    waypoints_.waypoints[waypoint_id_].id);
 }
 
 void WaypointManager::sendGoal(const geometry_msgs::msg::Pose & goal)
@@ -390,13 +382,7 @@ void WaypointManager::loop()
 
   const auto & current_waypoint = waypoints_.waypoints[waypoint_id_];
 
-  if (vel < 1e-5 && !_is_robot_wait &&
-    !isInsideWaypointArea(robot_pose_.pose, current_waypoint))
-  {
-    sendGoal(current_waypoint.pose);
-    RCLCPP_DEBUG(this->get_logger(), "Re-sent goal for waypoint id=%u", current_waypoint.id);
-  }
-
+  // Next / final goals: advance immediately without waiting for idle.
   if (waypoint_id_ < waypoints_.waypoints.size() - 1) {
     if (isInsideWaypointArea(robot_pose_.pose, current_waypoint)) {
       _is_robot_wait = current_waypoint.robot_wait;
@@ -405,10 +391,46 @@ void WaypointManager::loop()
         get_logger(), "Waypoint id=%u reached. Sending next goal (waypoint id=%u)",
         current_waypoint.id, waypoints_.waypoints[waypoint_id_].id);
       sendGoal(waypoints_.waypoints[waypoint_id_].pose);
+      last_goal_sent_time_ = this->now();
+      waiting_for_idle_ = false;
+      return;
     }
   } else if (isInsideWaypointArea(robot_pose_.pose, current_waypoint)) {
     goal_reached_ = true;
     RCLCPP_INFO(get_logger(), "All waypoints reached (final waypoint id=%u)", current_waypoint.id);
+    return;
+  }
+
+  if (_is_robot_wait) {
+    return;
+  }
+
+  // Startup: wait until /vi_state becomes idle, then send the first goal.
+  if (waiting_for_idle_) {
+    if (!vi_is_idle_) {
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Waiting for /vi_state to become idle before sending goal");
+      return;
+    }
+    RCLCPP_INFO(
+      get_logger(), "vi_state is idle. Sending first goal (waypoint id=%u)",
+      current_waypoint.id);
+    sendGoal(current_waypoint.pose);
+    last_goal_sent_time_ = this->now();
+    waiting_for_idle_ = false;
+    return;
+  }
+
+  // After sending a goal: if still idle for a few seconds, resend.
+  if (vi_is_idle_ &&
+    (this->now() - last_goal_sent_time_).seconds() >= goal_resend_interval_sec_)
+  {
+    sendGoal(current_waypoint.pose);
+    last_goal_sent_time_ = this->now();
+    RCLCPP_INFO(
+      get_logger(), "vi_state still idle. Re-sent goal for waypoint id=%u",
+      current_waypoint.id);
   }
 }
 

@@ -12,6 +12,7 @@
 #include "waypoint_manager_msgs/msg/waypoints.hpp"
 // #include "waypoint_manager_msgs/srv/load_waypoint_yaml.hpp"
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
 #include <tf2_ros/buffer.h>
@@ -44,15 +45,14 @@ protected:
   void sendGoal(const geometry_msgs::msg::Pose & goal);
   void initsendGoal();
 //  void cancelGoal();
-  void cmd_vel_callback(const geometry_msgs::msg::Twist::SharedPtr msg);
+  void vi_state_callback(const std_msgs::msg::String::SharedPtr msg);
 
   void loop();
 
 private:
   // clang-format off
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pub_;
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
-  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr vi_state_sub_;
 //  rclcpp::Service<waypoint_manager_msgs::srv::LoadWaypointYaml>::SharedPtr load_waypoint_yaml_service_server_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr restart_waypoint_manager_service_server_;
 //  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_waypoint_manager_service_server_;
@@ -71,6 +71,7 @@ private:
   std::string waypoint_csv_path_;
   waypoint_manager_msgs::msg::Waypoints waypoints_;
   double waypoint_radius_;
+  double goal_resend_interval_sec_{3.0};
 
   uint32_t waypoint_id_{0};
   geometry_msgs::msg::PoseStamped robot_pose_;
@@ -78,7 +79,9 @@ private:
   bool get_robot_pose_{false};
   bool _is_robot_wait{false};
   bool goal_reached_{false};
-  double vel{0.0};
+  bool vi_is_idle_{false};
+  bool waiting_for_idle_{true};
+  rclcpp::Time last_goal_sent_time_{0, 0, RCL_ROS_TIME};
 };
 
 }  // namespace waypoint_manager
