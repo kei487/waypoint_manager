@@ -1,6 +1,7 @@
 <launch>
 
-	<arg name ="waypoint_csv"  default="$(find-pkg-share waypoint_manager)/config/tsudanuma/waypoint3.csv"/>
+	<arg name ="waypoint_csv"  default="$(find-pkg-share waypoint_manager)/config/tsukuba/waypoint_tc2026_1.csv"/>
+	<!-- <arg name ="waypoint_csv"  default="$(find-pkg-share waypoint_manager)/config/tsudanuma/waypoint3.csv"/> -->
 
   <node pkg="waypoint_manager" exec="waypoint_manager" >
       <param name="waypoint_csv_path"             value="$(var waypoint_csv)"/>
