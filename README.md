@@ -1,6 +1,8 @@
 # waypoint_manager
 
-ROS 2 (Humble) 向けのシンプルなウェイポイントフォロワーです。`waypoint_editor` と共通の CSV 形式で定義したウェイポイント列に沿ってロボットをナビゲートします。Nav2 などのナビゲーションスタックが出力する速度指令を監視しつつ、`goal_pose` トピックへ次の目標姿勢を順番に送信します。
+ROS 2 (Humble) 向けのシンプルなウェイポイントフォロワーです。`waypoint_editor` と共通の CSV 形式で定義したウェイポイント列に沿って、次の目標姿勢を `goal_pose` へ順番に送信します。
+
+速度指令の送受信は行いません。ナビゲーションは [value_iteration2](https://github.com/kei487/value_iteration2/tree/mugimaru2026)（`goal_pose` 購読・`/vi_status` 配信）、速度合成は [velocity_manager](https://github.com/CIT-Autonomous-Robot-Lab/velocity_manager) を想定しています。
 
 ## パッケージ構成
 
@@ -12,31 +14,29 @@ ROS 2 (Humble) 向けのシンプルなウェイポイントフォロワーで�
 ## 動作概要
 
 1. 起動時に CSV ファイルからウェイポイントを読み込む
-2. 最初のウェイポイントを `goal_pose` に publish
-3. 100 ms 周期のタイマーでロボット位置（`map` フレーム）を監視
+2. `/vi_status` が `idle` になるまで待機し、先頭ウェイポイントを `goal_pose` に publish
+3. 500 ms 周期のタイマーでロボット位置（`map` フレーム）を監視
 4. 現在のウェイポイント半径内に入ると、次のウェイポイントへ目標を更新
-5. `robot_wait: true` のウェイポイントでは、到達後に `cmd_vel` をゼロにして停止を維持
-6. `/restart_waypoint_manager` サービスで先頭ウェイポイントから再開
+5. 送信後も `/vi_status` が `idle` のままなら、`goal_resend_interval_sec` 間隔で同一目標を再送
+6. `robot_wait: true` のウェイポイント到達後は goal 再送を抑制（速度停止は velocity_manager 側）
+7. `/restart_waypoint_manager` サービスで先頭ウェイポイントから再開（再び `/vi_status` idle 待ち）
 
 ```
   CSV waypoints (waypoint_editor 共通形式)
         |
         v
-  waypoint_manager ----goal_pose----> Nav2 / ナビゲータ
-        ^                                        |
-        |                                        v
-   TF (map<-base)                          cmd_vel
-        |                                        |
-        +-------- cmd_vel_sub <------------------+
+  waypoint_manager ----goal_pose----> value_iteration2 ----cmd_vel----> velocity_manager
+        ^                     |
+        |                     v
+   TF (map<-base)         /vi_status (idle / ...)
         |
-        v
-     cmd_vel (sim_cmd_vel 等へ remap)
+        +---- /vi_status <----+
 ```
 
 ## 依存関係
 
 - ROS 2 Humble
-- `rclcpp`, `geometry_msgs`, `std_srvs`
+- `rclcpp`, `geometry_msgs`, `std_msgs`, `std_srvs`
 - `nav2_util`, `tf2_ros`
 - `waypoint_manager_msgs`
 
@@ -67,7 +67,8 @@ ros2 launch waypoint_manager waypoint_manager.launch.xml \
 ```bash
 ros2 run waypoint_manager waypoint_manager --ros-args \
   -p waypoint_csv_path:=$(ros2 pkg prefix waypoint_manager)/share/waypoint_manager/config/waypoint_test.csv \
-  -p waypoint_radius:=0.5
+  -p waypoint_radius:=0.5 \
+  -p goal_resend_interval_sec:=3.0
 ```
 
 ## パラメータ
@@ -76,25 +77,20 @@ ros2 run waypoint_manager waypoint_manager --ros-args \
 |------|-----|-----------|------|
 | `waypoint_csv_path` | string | `waypoint.csv` | ウェイポイント定義 CSV のパス |
 | `waypoint_radius` | double | `0.5` | 各ウェイポイントの到達判定半径（m）。CSV で個別指定がない場合に使用 |
+| `goal_resend_interval_sec` | double | `3.0` | `/vi_status` が `idle` のままのとき同一 `goal_pose` を再送する間隔（秒） |
 
 ## トピック
 
 | トピック | 型 | 方向 | 説明 |
 |---------|-----|------|------|
-| `goal_pose` | `geometry_msgs/PoseStamped` | publish | 現在のナビゲーション目標 |
-| `cmd_vel_sub` | `geometry_msgs/Twist` | subscribe | ナビゲーションスタックからの速度指令（入力） |
-| `cmd_vel` | `geometry_msgs/Twist` | publish | ロボットへ送る速度指令（`robot_wait` 時はゼロ） |
-
-launch ファイルでは次の remap が設定されています:
-
-- `cmd_vel_sub` → `/cmd_vel`（Nav2 の出力を受信）
-- `cmd_vel` → `/sim_cmd_vel`（シミュレータ等へ送信）
+| `goal_pose` | `geometry_msgs/PoseStamped` | publish | 現在のナビゲーション目標（value_iteration2 が購読） |
+| `/vi_status` | `std_msgs/String` | subscribe | value_iteration2 の状態。`idle` のとき初回送信・再送の条件に使用 |
 
 ## サービス
 
 | サービス | 型 | 説明 |
 |---------|-----|------|
-| `/restart_waypoint_manager` | `std_srvs/Trigger` | ウェイポイント列を先頭から再開し、待機状態を解除 |
+| `/restart_waypoint_manager` | `std_srvs/Trigger` | ウェイポイント列を先頭から再開し、待機状態を解除（送信は `/vi_status` idle 待ち） |
 
 ```bash
 ros2 service call /restart_waypoint_manager std_srvs/srv/Trigger
@@ -114,7 +110,7 @@ id,pose_x,pose_y,pose_z,rot_x,rot_y,rot_z,rot_w,waypoint_radius,robot_wait,comma
 - `id`: ウェイポイント識別子（ログ表示用）
 - `pose_x/y/z`, `rot_x/y/z/w`: `map` フレーム上の位置とクォータニオン
 - `waypoint_radius`: 到達判定半径 [m]（省略時はパラメータ `waypoint_radius`）
-- `robot_wait`: 到達後にロボットを停止させるか（`true`/`false`）。`true` のとき `/restart_waypoint_manager` で再開
+- `robot_wait`: 到達後に goal 再送を抑制するか（`true`/`false`）。速度停止は velocity_manager 側。再開は `/restart_waypoint_manager`
 - `command`: `waypoint_editor` 用の任意コマンド列（本ノードでは未使用）
 
 `waypoint_radius` / `robot_wait` 列が無い従来形式の CSV も読み込めます（半径はパラメータ値、`robot_wait` は `false`）。
@@ -122,7 +118,8 @@ id,pose_x,pose_y,pose_z,rot_x,rot_y,rot_z,rot_w,waypoint_radius,robot_wait,comma
 サンプルファイル:
 
 - `waypoint_manager/config/waypoint_test.csv` — 3 点のテスト経路
-- `waypoint_manager/config/waypoint.csv` — 6 点の本番用経路
+- `waypoint_manager/config/tsukuba/waypoint_tc2026_1.csv` — つくばチャレンジ用経路
+- `waypoint_manager/config/tsudanuma/waypoint*.csv` — 津田沼用経路
 
 ### 旧 YAML からの変換
 
@@ -152,9 +149,11 @@ ros2 run waypoint_manager yaml_to_csv.sh /path/to/waypoint.yaml
 ## 必要条件（実行環境）
 
 - `map` → `base_link`（または `base_footprint`）の TF が配信されていること
-- ナビゲーションスタックが `goal_pose` を受け取り、`cmd_vel` を出力すること
+- value_iteration2 が `goal_pose` を受け取り、`/vi_status` を配信すること
+- 速度指令は velocity_manager 側で扱うこと
 
 TF が無い場合、位置取得に失敗しウェイポイント到達判定は行われません（ログスパムは抑止済み）。
+`/vi_status` が `idle` にならない場合、初回の `goal_pose` は送信されません。
 
 ## ライセンス
 

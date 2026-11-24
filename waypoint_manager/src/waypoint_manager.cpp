@@ -63,8 +63,6 @@ void WaypointManager::initPublisher()
 {
   goal_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
     "goal_pose", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable());
-  cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>(
-    "cmd_vel", rclcpp::QoS(10).transient_local().reliable());
 }
 
 
@@ -97,7 +95,7 @@ void WaypointManager::initServiceServer()
 
     response->success = true;
     response->message =
-      "Called /restart_waypoint_manager. Waiting for /vi_state idle before sending first goal.";
+      "Called /restart_waypoint_manager. Waiting for /vi_status idle before sending first goal.";
   };
   restart_waypoint_manager_service_server_ =
     create_service<std_srvs::srv::Trigger>("restart_waypoint_manager", restart_waypoint_manager);
@@ -317,7 +315,7 @@ void WaypointManager::initsendGoal(){
   waiting_for_idle_ = true;
   RCLCPP_INFO(
     get_logger(),
-    "Waiting for /vi_state idle before sending first goal (waypoint id=%u)",
+    "Waiting for /vi_status idle before sending first goal (waypoint id=%u)",
     waypoints_.waypoints[waypoint_id_].id);
 }
 
@@ -408,16 +406,16 @@ void WaypointManager::loop()
     return;
   }
 
-  // Startup: wait until /vi_state becomes idle, then send the first goal.
+  // Startup: wait until /vi_status becomes idle, then send the first goal.
   if (waiting_for_idle_) {
     if (!vi_is_idle_) {
       RCLCPP_INFO_THROTTLE(
         get_logger(), *get_clock(), 5000,
-        "Waiting for /vi_state to become idle before sending goal");
+        "Waiting for /vi_status to become idle before sending goal");
       return;
     }
     RCLCPP_INFO(
-      get_logger(), "vi_state is idle. Sending first goal (waypoint id=%u)",
+      get_logger(), "vi_status is idle. Sending first goal (waypoint id=%u)",
       current_waypoint.id);
     sendGoal(current_waypoint.pose);
     last_goal_sent_time_ = this->now();
@@ -432,7 +430,7 @@ void WaypointManager::loop()
     sendGoal(current_waypoint.pose);
     last_goal_sent_time_ = this->now();
     RCLCPP_INFO(
-      get_logger(), "vi_state still idle. Re-sent goal for waypoint id=%u",
+      get_logger(), "vi_status still idle. Re-sent goal for waypoint id=%u",
       current_waypoint.id);
   }
 }
